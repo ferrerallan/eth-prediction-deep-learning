@@ -1,15 +1,3 @@
-# file: eth_forecast_poc_normalized.py
-"""
-POC: Forecast 1 passo à frente do preço do ETH usando Conv1D causal + LSTM,
-com NORMALIZAÇÃO (z-score) para evitar previsões coladas em 0.
-
-Entrada:
-  - eth.json (formato: {"prices":[[timestamp_ms, price], ...], ...})
-
-Saídas:
-  - plots (série + previsão + loss)
-  - metrics.pkl (mse/mae)
-"""
 
 from __future__ import annotations
 
@@ -47,7 +35,7 @@ def plot_series(time: np.ndarray, series: np.ndarray, fmt: str = "-", start: int
 
 def load_eth_prices(json_path: Path) -> tuple[np.ndarray, np.ndarray]:
     """
-    Lê eth.json e retorna:
+    Reads eth.json and returns:
       - TIME: 0..N-1
       - SERIES: preços (float32)
     """
@@ -57,10 +45,10 @@ def load_eth_prices(json_path: Path) -> tuple[np.ndarray, np.ndarray]:
     payload = json.loads(json_path.read_text(encoding="utf-8"))
     prices = payload.get("prices")
     if not prices:
-        raise ValueError("JSON não contém a chave 'prices' ou está vazia.")
+        raise ValueError("JSON invalid: 'prices' key not found or empty.")
 
     if not isinstance(prices, list) or len(prices[0]) != 2:
-        raise ValueError("'prices' deve ser uma lista de pares [timestamp_ms, price].")
+        raise ValueError("'prices' must be a list of pairs [timestamp_ms, price].")
 
     series = np.asarray([p[1] for p in prices], dtype=np.float32)
     time = np.arange(series.shape[0], dtype=np.float32)
@@ -76,7 +64,7 @@ def train_val_split(
 
 def windowed_dataset(series: np.ndarray, window_size: int, batch_size: int, shuffle_buffer_size: int) -> tf.data.Dataset:
     """
-    Dataset de janelas:
+    Windowed dataset:
       X: (window_size, 1)
       y: (1,)
     """
@@ -93,7 +81,7 @@ def windowed_dataset(series: np.ndarray, window_size: int, batch_size: int, shuf
 
 
 def create_uncompiled_model(window_size: int) -> tf.keras.Model:
-    """Conv1D causal + LSTM stack para forecast 1 passo à frente."""
+    """Conv1D causal + LSTM stack for 1-step ahead forecast."""
     return tf.keras.Sequential(
         [
             tf.keras.Input(shape=(window_size, 1)),
@@ -112,7 +100,7 @@ def create_uncompiled_model(window_size: int) -> tf.keras.Model:
 
 
 def create_model(window_size: int) -> tf.keras.Model:
-    """Cria e compila o modelo."""
+    """Create and compile the model."""
     model = create_uncompiled_model(window_size)
     model.compile(
         loss=tf.keras.losses.Huber(),
@@ -123,7 +111,7 @@ def create_model(window_size: int) -> tf.keras.Model:
 
 
 def model_forecast(model: tf.keras.Model, series: np.ndarray, window_size: int) -> np.ndarray:
-    """Forecast vetorizado via tf.data."""
+    """Vectorized forecast via tf.data."""
     series = tf.convert_to_tensor(series, dtype=tf.float32)
     ds = tf.data.Dataset.from_tensor_slices(series)
     ds = ds.window(window_size, shift=1, drop_remainder=True)
@@ -135,7 +123,7 @@ def model_forecast(model: tf.keras.Model, series: np.ndarray, window_size: int) 
 
 
 def compute_metrics(true_series: np.ndarray, forecast: np.ndarray) -> tuple[float, float]:
-    """Retorna (mse, mae) como floats."""
+    """Returns (mse, mae) as floats."""
     true_series = tf.convert_to_tensor(true_series, dtype=tf.float32)
     forecast = tf.convert_to_tensor(forecast, dtype=tf.float32)
     mse = tf.reduce_mean(tf.keras.losses.MSE(true_series, forecast)).numpy().item()
@@ -144,12 +132,12 @@ def compute_metrics(true_series: np.ndarray, forecast: np.ndarray) -> tuple[floa
 
 
 def main() -> None:
-    print(f"[1/6] Lendo JSON: {CFG.in_json}")
+    print(f"[1/6] Reading JSON: {CFG.in_json}")
     time, series = load_eth_prices(CFG.in_json)
-    print(f"[2/6] Pontos: {len(series)}")
+    print(f"[2/6] Points: {len(series)}")
 
     if len(series) < CFG.window_size + 10:
-        raise ValueError(f"Dataset muito curto ({len(series)} pontos). Reduza window_size ou use mais dados.")
+        raise ValueError(f"Dataset too short ({len(series)} points). Reduce window_size or use more data    .")
 
     split_time = int(len(series) * CFG.train_ratio)
     split_time = max(split_time, CFG.window_size + 1)
@@ -165,10 +153,10 @@ def main() -> None:
 
     plt.figure(figsize=(10, 6))
     plot_series(time, series)
-    plt.title("ETH - Série (preço)")
+    plt.title("ETH - Series (price)")
     plt.show()
 
-    print("[4/6] Criando dataset e treinando...")
+    print("[4/6] Creating dataset and training...")
     train_ds = windowed_dataset(series_train_norm, CFG.window_size, CFG.batch_size, CFG.shuffle_buffer_size)
 
     model = create_model(CFG.window_size)
@@ -180,7 +168,7 @@ def main() -> None:
     plt.legend(loc=0)
     plt.show()
 
-    print("[5/6] Gerando forecast...")
+    print("[5/6] Generating forecast...")
     forecast_input = series_norm[split_time - CFG.window_size : -1]
     forecast_norm = model_forecast(model, forecast_input, CFG.window_size)
     forecast_norm = forecast_norm[: len(series_valid)]
@@ -189,7 +177,7 @@ def main() -> None:
     plt.figure(figsize=(10, 6))
     plot_series(time_valid, series_valid)
     plot_series(time_valid, forecast)
-    plt.title("Validação vs Previsão (1 passo à frente)")
+    plt.title("Validation vs Forecast (1 step ahead)")
     plt.show()
 
     mse, mae = compute_metrics(series_valid, forecast)
@@ -198,7 +186,7 @@ def main() -> None:
     with open(CFG.metrics_pkl, "wb") as f:
         pickle.dump({"mse": mse, "mae": mae, "mean": mean, "std": std}, f)
 
-    print(f"OK: métricas salvas em {CFG.metrics_pkl.resolve()}")
+    print(f"OK: metrics saved to {CFG.metrics_pkl.resolve()}")
 
 
 if __name__ == "__main__":
